@@ -1,0 +1,200 @@
+:root {
+  color-scheme: dark;
+  font-family: "Trebuchet MS", sans-serif;
+  background:
+    radial-gradient(circle at top, #1e293b 0%, #0f172a 40%, #020617 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  min-height: 100%;
+  width: 100%;
+}
+
+body {
+  overflow: hidden;
+}
+
+#app {
+  height: 100vh;
+  position: relative;
+}
+
+canvas {
+  display: block;
+}
+
+.menu-overlay {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 20px 24px 24px;
+  pointer-events: auto;
+}
+
+.menu-overlay--hidden {
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.menu-overlay__field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  flex: 0 0 auto;
+}
+
+.menu-overlay__section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(71, 85, 105, 0.4);
+}
+
+.menu-overlay__section--hidden {
+  display: none;
+}
+
+.menu-overlay__section-title {
+  color: #f8fafc;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.menu-overlay__controls {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  min-width: 0;
+}
+
+.menu-overlay__toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  cursor: pointer;
+}
+
+.menu-overlay__toggle-label {
+  color: #e2e8f0;
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.menu-overlay__toggle-input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.menu-overlay__toggle-slider {
+  position: relative;
+  width: 54px;
+  height: 30px;
+  border: 1px solid #475569;
+  background: rgba(15, 23, 42, 0.9);
+  flex: 0 0 auto;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease;
+}
+
+.menu-overlay__toggle-slider::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  background: #cbd5e1;
+  transition:
+    transform 160ms ease,
+    background 160ms ease;
+}
+
+.menu-overlay__toggle-input:checked + .menu-overlay__toggle-slider {
+  border-color: #38bdf8;
+  background: rgba(14, 165, 233, 0.28);
+}
+
+.menu-overlay__toggle-input:checked + .menu-overlay__toggle-slider::after {
+  transform: translateX(24px);
+  background: #f8fafc;
+}
+
+.menu-overlay__label {
+  color: #e2e8f0;
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.menu-overlay__input {
+  width: min(100%, 180px);
+  border: 1px solid #475569;
+  background: rgba(2, 6, 23, 0.92);
+  color: #f8fafc;
+  border-radius: 0;
+  font: inherit;
+  font-size: 1rem;
+  padding: 0.75rem 0.9rem;
+}
+
+.menu-overlay__select {
+  width: min(100%, 180px);
+  border: 1px solid #475569;
+  background: rgba(2, 6, 23, 0.92);
+  color: #f8fafc;
+  border-radius: 0;
+  font: inherit;
+  font-size: 1rem;
+  padding: 0.75rem 0.9rem;
+}
+
+.menu-overlay__parameters {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 14px;
+  min-width: 0;
+}
+
+.menu-overlay__button {
+  align-self: center;
+  margin-top: auto;
+  width: min(100%, 180px);
+  border: 1px solid #38bdf8;
+  background:
+    linear-gradient(135deg, rgba(14, 165, 233, 0.22), rgba(59, 130, 246, 0.14));
+  color: #f8fafc;
+  cursor: pointer;
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 0.9rem 1rem;
+  text-transform: uppercase;
+}
+
+.menu-overlay__button:hover {
+  background:
+    linear-gradient(135deg, rgba(14, 165, 233, 0.34), rgba(59, 130, 246, 0.24));
+}
