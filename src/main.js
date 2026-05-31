@@ -58,6 +58,38 @@ function normalizeGraphSize(value) {
   return clamp(parsed, MIN_GRAPH_SIZE, MAX_GRAPH_SIZE);
 }
 
+function sanitizeSeedInputValue(value) {
+  return String(value ?? "").replace(/\D+/g, "");
+}
+
+function normalizeSeedInputValue(value) {
+  const sanitized = sanitizeSeedInputValue(value);
+
+  if (sanitized === "") {
+    return "";
+  }
+
+  const parsed = Number.parseInt(sanitized, 10);
+
+  if (Number.isFinite(parsed)) {
+    return parsed;
+  }
+
+  try {
+    return Number(BigInt(sanitized) & 0xffffffffn);
+  } catch {
+    return "";
+  }
+}
+
+function formatSeedInputValue(value) {
+  if (value === "" || value === undefined || value === null) {
+    return "";
+  }
+
+  return String(value);
+}
+
 function getExclusiveInputMax(valueType, lower, upper) {
   if (!Number.isFinite(upper)) {
     return null;
@@ -309,7 +341,10 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
   const seedInput = document.createElement("input");
   seedInput.className = "menu-overlay__input";
   seedInput.type = "text";
-  seedInput.value = selectionState.seed ?? "";
+  seedInput.inputMode = "numeric";
+  seedInput.pattern = "[0-9]*";
+  seedInput.autocomplete = "off";
+  seedInput.value = formatSeedInputValue(selectionState.seed);
 
   sizeField.append(sizeFieldLabel, sizeInput);
   seedField.append(seedFieldLabel, seedInput);
@@ -628,11 +663,13 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
 
   function handleSave() {
     const nextSize = normalizeGraphSize(sizeInput.value);
+    const nextSeed = normalizeSeedInputValue(seedInput.value);
     const concentrationFieldParameterValues = {};
     const mapParameterValues = {};
     syncMapInterpolatorDraftValues();
 
     sizeInput.value = String(nextSize);
+    seedInput.value = formatSeedInputValue(nextSeed);
 
     for (const [parameterName, input] of concentrationParameterInputs) {
       concentrationFieldParameterValues[parameterName] = input.value;
@@ -644,7 +681,7 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
 
     onSave({
       size: nextSize,
-      seed: seedInput.value,
+      seed: nextSeed,
       useConcentrationField: selectionState.useConcentrationField,
       invert: selectionState.invert,
       concentrationFieldGeneratorKey: selectionState.concentrationFieldGeneratorKey,
@@ -752,6 +789,16 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
 
   sizeInput.addEventListener("input", () => {
     renderControls();
+  });
+  seedInput.addEventListener("input", () => {
+    const sanitized = sanitizeSeedInputValue(seedInput.value);
+
+    if (seedInput.value !== sanitized) {
+      seedInput.value = sanitized;
+    }
+  });
+  seedInput.addEventListener("change", () => {
+    seedInput.value = sanitizeSeedInputValue(seedInput.value);
   });
   addSaveKeyBinding(sizeInput);
   addSaveKeyBinding(seedInput);

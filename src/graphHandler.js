@@ -182,6 +182,16 @@ export function normalizeConcentrationField(concentrationField) {
   return normalizedGraph;
 }
 
+export function zeroOutFloatingTileValues(graph) {
+  graph.forEachTile((tile) => {
+    if (!Number.isFinite(tile.value) || !Number.isInteger(tile.value)) {
+      tile.value = 0;
+    }
+  });
+
+  return graph;
+}
+
 export function checkeredPattern(graph) {
   graph.forEachTile((tile) => {
     if (tile.x === 0 && tile.y === 0) {

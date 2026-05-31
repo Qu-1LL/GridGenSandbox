@@ -1,6 +1,7 @@
 import {
   Graph,
   normalizeConcentrationField,
+  zeroOutFloatingTileValues,
   XorShift32
 } from "./graphHandler.js";
 
@@ -842,7 +843,7 @@ export class DrunkardsWalk extends SelectableGenerator {
         valueType: GeneratorValueType.INTEGER,
         getLimits: (size) => ({
           lower: 1,
-          upper: Math.ceil(size / 5) + 1
+          upper: size + 1
         })
       },
       {
@@ -895,8 +896,8 @@ export class DrunkardsWalk extends SelectableGenerator {
   interpolateConcentrationField(
     concentrationField, 
     seed,
-    drunkardCount = this.getParameterValue("drunkardCount", MapGenerator),
-    steps = this.getParameterValue("steps", MapGenerator)
+    drunkardCount = this.getParameterValue("drunkardCount", ConcentrationFieldInterpolater),
+    steps = this.getParameterValue("steps", ConcentrationFieldInterpolater)
   ) {
     const graph = concentrationField
     const size = concentrationField.size
@@ -925,7 +926,7 @@ export class DrunkardsWalk extends SelectableGenerator {
       }
     }
 
-    return graph
+    return zeroOutFloatingTileValues(graph)
   }
 }
 
@@ -933,13 +934,13 @@ function weightedMove(weights, random) {
 
   let totalWeight = 0
   for (let i = 0; i < weights.length; i++) {
-    totalWeight += weights[i]
+    totalWeight += weights[i].value
   }
 
   let myWeight = random.nextFloatTo(totalWeight)
 
   for (let i = 0; i < weights.length; i++) {
-    myWeight -= weights[i]
+    myWeight -= weights[i].value
     if (myWeight <= 0) {
       return i
     }
