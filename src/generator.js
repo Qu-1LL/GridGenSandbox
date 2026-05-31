@@ -25,7 +25,7 @@ function getExclusiveUpperBound(valueType, upper, lower) {
   return Math.max(lower, upper - epsilon);
 }
 
-function normalizeNumericValue(valueType, value, lower, upper, fallback) {
+export function normalizeNumericValue(valueType, value, lower, upper, fallback) {
   const parsed =
     valueType === GeneratorValueType.INTEGER
       ? Number.parseInt(value, 10)
@@ -949,13 +949,60 @@ function weightedMove(weights, random) {
   return null
 }
 
+class Region {
+
+    constructor(catalyst) {
+      this.tiles = new Set()
+      this.openEdge = new Set()
+      this.steps = 1
+
+      this.tiles.add(catalyst)
+      this.openEdge.add(catalyst)
+      catalyst.value = 1
+    }
+
+    advance() {
+      this.steps++
+
+      const deadEdge = new Set();
+      const newEdge = new Set();
+
+      for (let tile of this.openEdge) {
+        if (tile.value === this.steps) {
+          this.tiles.delete(tile)
+          deadEdge.add(tile)
+          continue
+        }
+        for (let neighbor of Object.values(tile.neighbors)) {
+          if (!neighbor) {
+            continue
+          }
+          if (neighbor.value === 0) {
+            neighbor.value = this.steps
+            this.tiles.add(neighbor)
+            newEdge.add(neighbor)
+          } else if (!this.tiles.has(neighbor)) {
+            neighbor.value = neighbor.value === this.steps ? this.steps + 1 : this.steps
+            deadEdge.add(tile)
+          } else {
+            continue
+          }
+        } 
+      }
+
+      this.openEdge = newEdge
+      return deadEdge
+    }
+
+  }
+
 export class VoronoiRegions extends SelectableGenerator {
   constructor() {
     super(
       "voronoi-regions",
       "VoronoiRegions",
       {
-        regionCount: 1
+        regionCount: 5
       },
       [MapGenerator, ConcentrationFieldGenerator]
     );
@@ -968,21 +1015,95 @@ export class VoronoiRegions extends SelectableGenerator {
         label: "Region Count",
         valueType: GeneratorValueType.INTEGER,
         getLimits: () => ({
-          lower: 1,
-          upper: 501
+          lower: 2,
+          upper: 5001
         })
       }
     ];
   }
 
-  generateMap(size, seed) {
-    void size;
-    void seed;
+  generateMap(
+    size, 
+    seed,
+    regionCount = this.getParameterValue("regionCount", MapGenerator)
+  ) {
+    const graph = new Graph(size)
+    const random = new XorShift32(seed)
+
+    const regions = new Set()
+    const chosen = new Set()
+
+    for (let i = 0; i < regionCount; i++) {
+      const x = random.next(size)
+      const y = random.next(size)
+      const myTile = graph.getTile(x, y)
+      if (!chosen.has(myTile)) {
+        chosen.add(myTile)
+        const region = new Region(myTile)
+        regions.add(region)
+      }
+      
+    }
+
+    const walls = new Set()
+
+    while (regions.size > 0) {
+      for (let region of regions){
+        const newWalls = region.advance()
+
+        if (region.openEdge.size === 0) {
+          regions.delete(region)
+        }
+        for (let wall of newWalls) {
+          walls.add(wall)
+        }
+      }
+    }
+
+    const finalGraph = new Graph(size, 1)
+    
+    for (let tile of walls) {
+      finalGraph.getTile(tile.x, tile.y).value = 0
+    }
+
+    return finalGraph
+
   }
 
-  generateConcentrationField(size, seed) {
-    void size;
-    void seed;
+  generateConcentrationField(
+    size, 
+    seed,
+    regionCount = this.getParameterValue("regionCount", ConcentrationFieldInterpolater)
+  ) {
+    const graph = new Graph(size)
+    const random = new XorShift32(seed)
+
+    const regions = new Set()
+    const chosen = new Set()
+
+    for (let i = 0; i < regionCount; i++) {
+      const x = random.next(size)
+      const y = random.next(size)
+      const myTile = graph.getTile(x, y)
+      if (!chosen.has(myTile)) {
+        chosen.add(myTile)
+        const region = new Region(myTile)
+        regions.add(region)
+      }
+      
+    }
+
+    while (regions.size > 0) {
+      for (let region of regions){
+        const newWalls = region.advance()
+
+        if (region.openEdge.size === 0) {
+          regions.delete(region)
+        }
+      }
+    }
+
+    return normalizeConcentrationField(graph)
   }
 }
 

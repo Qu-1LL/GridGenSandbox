@@ -100,10 +100,10 @@ function safeStringifySeed(seed) {
 }
 
 export class Tile {
-  constructor(x, y) {
+  constructor(x, y, value) {
     this.x = x;
     this.y = y;
-    this.value = 0;
+    this.value = value;
     this.neighbors = {
       up: null,
       right: null,
@@ -114,10 +114,10 @@ export class Tile {
 }
 
 export class Graph {
-  constructor(size = 100) {
+  constructor(size = 100, value = 0) {
     this.size = size;
     this.tiles = Array.from({ length: size }, (_, y) =>
-      Array.from({ length: size }, (_, x) => new Tile(x, y))
+      Array.from({ length: size }, (_, x) => new Tile(x, y, value))
     );
 
     this.linkNeighbors();
@@ -182,10 +182,49 @@ export function normalizeConcentrationField(concentrationField) {
   return normalizedGraph;
 }
 
+export function invertGraph(graph, asConcentrationField = false) {
+  if (asConcentrationField) {
+    let maxValue = Number.NEGATIVE_INFINITY;
+
+    graph.forEachTile((tile) => {
+      const value = Number.isFinite(tile.value) ? tile.value : 0;
+      maxValue = Math.max(maxValue, value);
+    });
+
+    if (!Number.isFinite(maxValue)) {
+      return graph;
+    }
+
+    graph.forEachTile((tile) => {
+      const value = Number.isFinite(tile.value) ? tile.value : 0;
+      tile.value = Math.abs(maxValue - value);
+    });
+
+    return graph;
+  }
+
+  graph.forEachTile((tile) => {
+    const value = Number.isFinite(tile.value) ? tile.value : 0;
+    tile.value = value > 0 ? 0 : 1;
+  });
+
+  return graph;
+}
+
 export function zeroOutFloatingTileValues(graph) {
   graph.forEachTile((tile) => {
     if (!Number.isFinite(tile.value) || !Number.isInteger(tile.value)) {
       tile.value = 0;
+    }
+  });
+
+  return graph;
+}
+
+export function ceilFloatingTileValues(graph) {
+  graph.forEachTile((tile) => {
+    if (!Number.isFinite(tile.value) || !Number.isInteger(tile.value)) {
+      tile.value = 1;
     }
   });
 

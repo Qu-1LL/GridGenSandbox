@@ -6,9 +6,10 @@ import {
   createSelectableGenerators,
   GeneratorValueType,
   MapGenerator,
-  MapInterpolater
+  MapInterpolater,
+  normalizeNumericValue
 } from "./generator.js";
-import { Graph } from "./graphHandler.js";
+import { Graph, invertGraph } from "./graphHandler.js";
 
 const DEFAULT_GRAPH_SIZE = 100;
 const MIN_GRAPH_SIZE = 1;
@@ -123,6 +124,18 @@ function formatParameterValue(valueType, value) {
   return Number(value.toFixed(6)).toString();
 }
 
+function clampNumericInputValue(input, valueType, lower, upper) {
+  const normalizedValue = normalizeNumericValue(
+    valueType,
+    input.value,
+    lower,
+    upper,
+    input.value
+  );
+
+  input.value = formatParameterValue(valueType, normalizedValue);
+}
+
 function resolveGraphFromGenerator(generator, size, seed) {
   const generatedGraph =
     typeof generator?.generateMap === "function"
@@ -191,13 +204,6 @@ function resolveInterpolatedMap(generator, sourceMap, seed) {
   return new Graph(sourceMap.size);
 }
 
-function invertConcentrationField(graph) {
-  graph.forEachTile((tile) => {
-    const value = Number.isFinite(tile.value) ? tile.value : 0;
-    tile.value = 0.9999999 - value;
-  });
-}
-
 function buildDisplayGraph({
   size,
   seed,
@@ -218,7 +224,7 @@ function buildDisplayGraph({
     );
 
     if (invert) {
-      invertConcentrationField(concentrationField);
+      invertGraph(concentrationField, true);
     }
 
     map = resolveInterpolatedMapFromConcentrationField(
@@ -228,6 +234,10 @@ function buildDisplayGraph({
     );
   } else {
     map = resolveGraphFromGenerator(mapSelectionGenerator, size, runSeed);
+
+    if (invert) {
+      invertGraph(map);
+    }
   }
 
   let currentMap = map;
@@ -550,6 +560,10 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
           parameter.valueType,
           draftValues[parameter.name] ?? parameter.value
         );
+
+        parameterInput.addEventListener("change", () => {
+          clampNumericInputValue(parameterInput, parameter.valueType, lower, upper);
+        });
       }
 
       addSaveKeyBinding(parameterInput);
@@ -784,6 +798,7 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
   });
 
   sizeInput.addEventListener("change", () => {
+    sizeInput.value = String(normalizeGraphSize(sizeInput.value));
     renderControls();
   });
 
