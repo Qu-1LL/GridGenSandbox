@@ -13,9 +13,39 @@ import { Graph } from "./graphHandler.js";
 const DEFAULT_GRAPH_SIZE = 100;
 const MIN_GRAPH_SIZE = 1;
 const MAX_GRAPH_SIZE = 1000;
+const MAX_MAP_INTERPOLATORS = 3;
+
+function createRandomSeed() {
+  if (globalThis.crypto?.getRandomValues) {
+    return globalThis.crypto.getRandomValues(new Uint32Array(1))[0];
+  }
+
+  return Math.floor(Math.random() * 0x100000000);
+}
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function cloneParameterValues(values = {}) {
+  return { ...values };
+}
+
+function cloneMapInterpolatorSelection(selection = {}) {
+  return {
+    key: selection.key ?? "",
+    parameterValues: cloneParameterValues(selection.parameterValues)
+  };
+}
+
+function normalizeMapInterpolatorSelections(selections) {
+  if (!Array.isArray(selections)) {
+    return [];
+  }
+
+  return selections
+    .slice(0, MAX_MAP_INTERPOLATORS)
+    .map((selection) => cloneMapInterpolatorSelection(selection));
 }
 
 function normalizeGraphSize(value) {
@@ -42,8 +72,16 @@ function getExclusiveInputMax(valueType, lower, upper) {
 }
 
 function formatParameterValue(valueType, value) {
+  if (typeof value === "string") {
+    return value;
+  }
+
   if (valueType === GeneratorValueType.SEED) {
     return value ?? "";
+  }
+
+  if (value === undefined || value === null || !Number.isFinite(value)) {
+    return "";
   }
 
   if (valueType === GeneratorValueType.INTEGER) {
@@ -53,10 +91,10 @@ function formatParameterValue(valueType, value) {
   return Number(value.toFixed(6)).toString();
 }
 
-function resolveGraphFromGenerator(generator, size) {
+function resolveGraphFromGenerator(generator, size, seed) {
   const generatedGraph =
     typeof generator?.generateMap === "function"
-      ? generator.generateMap(size)
+      ? generator.generateMap(size, seed)
       : null;
 
   if (
@@ -78,10 +116,10 @@ function isGraph(value) {
   );
 }
 
-function resolveConcentrationFieldGraph(generator, size) {
+function resolveConcentrationFieldGraph(generator, size, seed) {
   const generatedGraph =
     typeof generator?.generateConcentrationField === "function"
-      ? generator.generateConcentrationField(size)
+      ? generator.generateConcentrationField(size, seed)
       : null;
 
   if (isGraph(generatedGraph)) {
@@ -91,10 +129,14 @@ function resolveConcentrationFieldGraph(generator, size) {
   return new Graph(size);
 }
 
-function resolveInterpolatedMapFromConcentrationField(generator, concentrationField) {
+function resolveInterpolatedMapFromConcentrationField(
+  generator,
+  concentrationField,
+  seed
+) {
   const generatedGraph =
     typeof generator?.interpolateConcentrationField === "function"
-      ? generator.interpolateConcentrationField(concentrationField)
+      ? generator.interpolateConcentrationField(concentrationField, seed)
       : null;
 
   if (isGraph(generatedGraph)) {
@@ -104,10 +146,10 @@ function resolveInterpolatedMapFromConcentrationField(generator, concentrationFi
   return new Graph(concentrationField.size);
 }
 
-function resolveInterpolatedMap(generator, sourceMap) {
+function resolveInterpolatedMap(generator, sourceMap, seed) {
   const generatedGraph =
     typeof generator?.interpolateMap === "function"
-      ? generator.interpolateMap(sourceMap)
+      ? generator.interpolateMap(sourceMap, seed)
       : null;
 
   if (isGraph(generatedGraph)) {
@@ -126,19 +168,21 @@ function invertConcentrationField(graph) {
 
 function buildDisplayGraph({
   size,
+  seed,
   useConcentrationField,
   invert,
-  useMapInterpolator,
   concentrationFieldGenerator,
   mapSelectionGenerator,
-  mapInterpolatorGenerator
+  mapInterpolatorSelections = []
 }) {
+  const runSeed = seed === "" ? createRandomSeed() : seed;
   let map;
 
   if (useConcentrationField) {
     const concentrationField = resolveConcentrationFieldGraph(
       concentrationFieldGenerator,
-      size
+      size,
+      runSeed
     );
 
     if (invert) {
@@ -147,23 +191,43 @@ function buildDisplayGraph({
 
     map = resolveInterpolatedMapFromConcentrationField(
       mapSelectionGenerator,
-      concentrationField
+      concentrationField,
+      runSeed
     );
   } else {
-    map = resolveGraphFromGenerator(mapSelectionGenerator, size);
+    map = resolveGraphFromGenerator(mapSelectionGenerator, size, runSeed);
   }
 
-  if (!useMapInterpolator) {
-    return map;
+  let currentMap = map;
+
+  for (const selection of mapInterpolatorSelections) {
+    const generator = selection?.generator ?? null;
+
+    if (!generator) {
+      continue;
+    }
+
+    generator.setParameterValues(
+      selection.parameterValues ?? {},
+      currentMap.size,
+      MapInterpolater
+    );
+    currentMap = resolveInterpolatedMap(generator, currentMap, runSeed);
   }
 
-  return resolveInterpolatedMap(mapInterpolatorGenerator, map);
+  return currentMap;
 }
 
 function getGeneratorsByType(generators, type) {
   return generators.filter((generator) =>
     generator.getImplementedTypes().includes(type)
   );
+}
+
+function getMapSelectionType(useConcentrationField) {
+  return useConcentrationField
+    ? ConcentrationFieldInterpolater
+    : MapGenerator;
 }
 
 function ensureGeneratorKey(generators, currentKey) {
@@ -210,8 +274,15 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
   const mapGenerators = getGeneratorsByType(generators, MapGenerator);
   const mapInterpolaters = getGeneratorsByType(generators, MapInterpolater);
   const selectionState = {
-    ...initialSelection
+    ...initialSelection,
+    mapInterpolatorSelections: normalizeMapInterpolatorSelections(
+      initialSelection.mapInterpolatorSelections
+    )
   };
+  const topRow = document.createElement("div");
+  topRow.className = "menu-overlay__top-row";
+  const bodySection = document.createElement("div");
+  bodySection.className = "menu-overlay__body";
 
   const sizeField = document.createElement("label");
   sizeField.className = "menu-overlay__field";
@@ -228,17 +299,27 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
   sizeInput.step = "1";
   sizeInput.value = String(initialSize);
 
+  const seedField = document.createElement("label");
+  seedField.className = "menu-overlay__field";
+
+  const seedFieldLabel = document.createElement("span");
+  seedFieldLabel.className = "menu-overlay__label";
+  seedFieldLabel.textContent = "Seed";
+
+  const seedInput = document.createElement("input");
+  seedInput.className = "menu-overlay__input";
+  seedInput.type = "text";
+  seedInput.value = selectionState.seed ?? "";
+
   sizeField.append(sizeFieldLabel, sizeInput);
+  seedField.append(seedFieldLabel, seedInput);
+  topRow.append(sizeField, seedField);
 
   const useConcentrationToggle = createToggleRow(
     "Use Concentration Field",
     selectionState.useConcentrationField
   );
   const invertToggle = createToggleRow("Invert", selectionState.invert);
-  const useMapInterpolatorToggle = createToggleRow(
-    "Use Map Interpolator",
-    selectionState.useMapInterpolator
-  );
 
   const concentrationSection = document.createElement("div");
   concentrationSection.className = "menu-overlay__section";
@@ -302,35 +383,27 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
   const mapInterpolatorSection = document.createElement("div");
   mapInterpolatorSection.className = "menu-overlay__section";
 
+  const mapInterpolatorHeader = document.createElement("div");
+  mapInterpolatorHeader.className = "menu-overlay__section-header";
+
   const mapInterpolatorTitle = document.createElement("div");
   mapInterpolatorTitle.className = "menu-overlay__section-title";
-  mapInterpolatorTitle.textContent = "Map Interpolator";
+  mapInterpolatorTitle.textContent = "Map Interpolater";
 
-  const mapInterpolatorControlsRow = document.createElement("div");
-  mapInterpolatorControlsRow.className = "menu-overlay__controls";
+  const addMapInterpolatorButton = document.createElement("button");
+  addMapInterpolatorButton.className = "menu-overlay__icon-button";
+  addMapInterpolatorButton.type = "button";
+  addMapInterpolatorButton.textContent = "+";
+  addMapInterpolatorButton.ariaLabel = "Add map interpolater";
 
-  const mapInterpolatorField = document.createElement("label");
-  mapInterpolatorField.className = "menu-overlay__field";
+  mapInterpolatorHeader.append(
+    mapInterpolatorTitle,
+    addMapInterpolatorButton
+  );
 
-  const mapInterpolatorFieldLabel = document.createElement("span");
-  mapInterpolatorFieldLabel.className = "menu-overlay__label";
-  mapInterpolatorFieldLabel.textContent = "Method";
-
-  const mapInterpolatorSelect = document.createElement("select");
-  mapInterpolatorSelect.className = "menu-overlay__select";
-
-  for (const generator of mapInterpolaters) {
-    const option = document.createElement("option");
-    option.value = generator.getKey();
-    option.textContent = generator.getLabel();
-    mapInterpolatorSelect.appendChild(option);
-  }
-
-  mapInterpolatorField.append(mapInterpolatorFieldLabel, mapInterpolatorSelect);
-
-  const mapInterpolatorParameterFields = document.createElement("div");
-  mapInterpolatorParameterFields.className = "menu-overlay__parameters";
-  const mapInterpolatorParameterInputs = new Map();
+  const mapInterpolatorList = document.createElement("div");
+  mapInterpolatorList.className = "menu-overlay__interpolator-list";
+  let mapInterpolatorRenderState = [];
   const saveButton = document.createElement("button");
   saveButton.className = "menu-overlay__button";
   saveButton.type = "button";
@@ -342,6 +415,13 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
       : mapGenerators;
   }
 
+  function createMapInterpolatorSelection(key = mapInterpolaters[0]?.getKey() ?? "") {
+    return {
+      key,
+      parameterValues: {}
+    };
+  }
+
   function syncSelections() {
     selectionState.concentrationFieldGeneratorKey = ensureGeneratorKey(
       concentrationFieldGenerators,
@@ -351,10 +431,12 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
       getMapSelectionPool(),
       selectionState.mapSelectionKey
     );
-    selectionState.mapInterpolatorKey = ensureGeneratorKey(
-      mapInterpolaters,
-      selectionState.mapInterpolatorKey
-    );
+    selectionState.mapInterpolatorSelections = selectionState.mapInterpolatorSelections
+      .slice(0, MAX_MAP_INTERPOLATORS)
+      .map((selection) => ({
+        key: ensureGeneratorKey(mapInterpolaters, selection.key),
+        parameterValues: cloneParameterValues(selection.parameterValues)
+      }));
   }
 
   function getSelectedGenerator(key) {
@@ -380,7 +462,13 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
     });
   }
 
-  function renderGeneratorParameterFields(target, inputsMap, generator, draftValues = {}) {
+  function renderGeneratorParameterFields(
+    target,
+    inputsMap,
+    generator,
+    implementedType,
+    draftValues = {}
+  ) {
     inputsMap.clear();
     target.replaceChildren();
 
@@ -388,7 +476,7 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
       return;
     }
 
-    for (const parameter of generator.getParameters()) {
+    for (const parameter of generator.getParameters(implementedType)) {
       const parameterField = document.createElement("label");
       parameterField.className = "menu-overlay__field";
 
@@ -437,11 +525,112 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
     }
   }
 
+  function syncMapInterpolatorDraftValues() {
+    selectionState.mapInterpolatorSelections = selectionState.mapInterpolatorSelections.map(
+      (selection, index) => {
+        const renderedSection = mapInterpolatorRenderState[index];
+
+        if (!renderedSection) {
+          return selection;
+        }
+
+        return {
+          key: renderedSection.select.value,
+          parameterValues: readInputValues(renderedSection.inputsMap)
+        };
+      }
+    );
+  }
+
+  function renderMapInterpolatorSections() {
+    syncMapInterpolatorDraftValues();
+    mapInterpolatorRenderState = [];
+    mapInterpolatorList.replaceChildren();
+
+    selectionState.mapInterpolatorSelections.forEach((selection, index) => {
+      const item = document.createElement("div");
+      item.className = "menu-overlay__interpolator-item";
+
+      const removeButton = document.createElement("button");
+      removeButton.className = "menu-overlay__icon-button";
+      removeButton.type = "button";
+      removeButton.textContent = "X";
+      removeButton.ariaLabel = `Remove map interpolater ${index + 1}`;
+      removeButton.addEventListener("click", () => {
+        syncMapInterpolatorDraftValues();
+        selectionState.mapInterpolatorSelections.splice(index, 1);
+        renderControls();
+      });
+
+      const controlsRow = document.createElement("div");
+      controlsRow.className = "menu-overlay__controls";
+
+      const field = document.createElement("label");
+      field.className = "menu-overlay__field";
+
+      const fieldLabel = document.createElement("span");
+      fieldLabel.className = "menu-overlay__label";
+      fieldLabel.textContent = "Method";
+
+      const select = document.createElement("select");
+      select.className = "menu-overlay__select";
+
+      for (const generator of mapInterpolaters) {
+        const option = document.createElement("option");
+        option.value = generator.getKey();
+        option.textContent = generator.getLabel();
+        select.appendChild(option);
+      }
+
+      select.value = ensureGeneratorKey(mapInterpolaters, selection.key);
+      select.addEventListener("change", () => {
+        syncMapInterpolatorDraftValues();
+        selectionState.mapInterpolatorSelections[index].key = select.value;
+        renderControls();
+      });
+
+      field.append(fieldLabel, select);
+
+      const parameterFields = document.createElement("div");
+      parameterFields.className = "menu-overlay__parameters";
+      const parameterInputs = new Map();
+
+      const removeField = document.createElement("div");
+      removeField.className = "menu-overlay__field menu-overlay__field--icon";
+
+      const removeFieldSpacer = document.createElement("span");
+      removeFieldSpacer.className = "menu-overlay__label menu-overlay__label--spacer";
+      removeFieldSpacer.setAttribute("aria-hidden", "true");
+      removeFieldSpacer.textContent = "Remove";
+
+      removeField.append(removeFieldSpacer, removeButton);
+
+      renderGeneratorParameterFields(
+        parameterFields,
+        parameterInputs,
+        getSelectedGenerator(select.value),
+        MapInterpolater,
+        selection.parameterValues
+      );
+
+      controlsRow.append(field, parameterFields, removeField);
+      item.append(controlsRow);
+      mapInterpolatorList.appendChild(item);
+      mapInterpolatorRenderState.push({
+        select,
+        inputsMap: parameterInputs
+      });
+    });
+
+    addMapInterpolatorButton.disabled =
+      selectionState.mapInterpolatorSelections.length >= MAX_MAP_INTERPOLATORS;
+  }
+
   function handleSave() {
     const nextSize = normalizeGraphSize(sizeInput.value);
     const concentrationFieldParameterValues = {};
     const mapParameterValues = {};
-    const mapInterpolatorParameterValues = {};
+    syncMapInterpolatorDraftValues();
 
     sizeInput.value = String(nextSize);
 
@@ -453,21 +642,21 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
       mapParameterValues[parameterName] = input.value;
     }
 
-    for (const [parameterName, input] of mapInterpolatorParameterInputs) {
-      mapInterpolatorParameterValues[parameterName] = input.value;
-    }
-
     onSave({
       size: nextSize,
+      seed: seedInput.value,
       useConcentrationField: selectionState.useConcentrationField,
       invert: selectionState.invert,
-      useMapInterpolator: selectionState.useMapInterpolator,
       concentrationFieldGeneratorKey: selectionState.concentrationFieldGeneratorKey,
       mapSelectionKey: selectionState.mapSelectionKey,
-      mapInterpolatorKey: selectionState.mapInterpolatorKey,
+      mapInterpolatorSelections: selectionState.mapInterpolatorSelections.map(
+        (selection) => ({
+          key: selection.key,
+          parameterValues: cloneParameterValues(selection.parameterValues)
+        })
+      ),
       concentrationFieldParameterValues,
-      mapParameterValues,
-      mapInterpolatorParameterValues
+      mapParameterValues
     });
 
     renderControls();
@@ -490,23 +679,19 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
   function renderControls() {
     const concentrationDraftValues = readInputValues(concentrationParameterInputs);
     const mapDraftValues = readInputValues(mapParameterInputs);
-    const mapInterpolatorDraftValues = readInputValues(
-      mapInterpolatorParameterInputs
+    syncMapInterpolatorDraftValues();
+    const mapSelectionType = getMapSelectionType(
+      selectionState.useConcentrationField
     );
 
     syncSelections();
 
     concentrationSelect.value = selectionState.concentrationFieldGeneratorKey;
-    mapInterpolatorSelect.value = selectionState.mapInterpolatorKey;
     renderMapSelectOptions();
 
     concentrationSection.classList.toggle(
       "menu-overlay__section--hidden",
       !selectionState.useConcentrationField
-    );
-    mapInterpolatorSection.classList.toggle(
-      "menu-overlay__section--hidden",
-      !selectionState.useMapInterpolator
     );
 
     renderGeneratorParameterFields(
@@ -515,26 +700,20 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
       selectionState.useConcentrationField
         ? getSelectedGenerator(selectionState.concentrationFieldGeneratorKey)
         : null,
+      ConcentrationFieldGenerator,
       concentrationDraftValues
     );
     renderGeneratorParameterFields(
       mapParameterFields,
       mapParameterInputs,
       getSelectedGenerator(selectionState.mapSelectionKey),
+      mapSelectionType,
       mapDraftValues
     );
-    renderGeneratorParameterFields(
-      mapInterpolatorParameterFields,
-      mapInterpolatorParameterInputs,
-      selectionState.useMapInterpolator
-        ? getSelectedGenerator(selectionState.mapInterpolatorKey)
-        : null,
-      mapInterpolatorDraftValues
-    );
+    renderMapInterpolatorSections();
 
     useConcentrationToggle.input.checked = selectionState.useConcentrationField;
     invertToggle.input.checked = selectionState.invert;
-    useMapInterpolatorToggle.input.checked = selectionState.useMapInterpolator;
   }
 
   concentrationSelect.addEventListener("change", () => {
@@ -547,11 +726,6 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
     renderControls();
   });
 
-  mapInterpolatorSelect.addEventListener("change", () => {
-    selectionState.mapInterpolatorKey = mapInterpolatorSelect.value;
-    renderControls();
-  });
-
   useConcentrationToggle.input.addEventListener("change", () => {
     selectionState.useConcentrationField = useConcentrationToggle.input.checked;
     renderControls();
@@ -561,8 +735,14 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
     selectionState.invert = invertToggle.input.checked;
   });
 
-  useMapInterpolatorToggle.input.addEventListener("change", () => {
-    selectionState.useMapInterpolator = useMapInterpolatorToggle.input.checked;
+  addMapInterpolatorButton.addEventListener("click", () => {
+    syncMapInterpolatorDraftValues();
+
+    if (selectionState.mapInterpolatorSelections.length >= MAX_MAP_INTERPOLATORS) {
+      return;
+    }
+
+    selectionState.mapInterpolatorSelections.push(createMapInterpolatorSelection());
     renderControls();
   });
 
@@ -574,6 +754,7 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
     renderControls();
   });
   addSaveKeyBinding(sizeInput);
+  addSaveKeyBinding(seedInput);
   saveButton.addEventListener("click", handleSave);
 
   mapControlsRow.append(mapField, mapParameterFields);
@@ -582,38 +763,28 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
   concentrationControlsRow.append(concentrationField, concentrationParameterFields);
   concentrationSection.append(concentrationTitle, concentrationControlsRow);
 
-  mapInterpolatorControlsRow.append(
-    mapInterpolatorField,
-    mapInterpolatorParameterFields
-  );
-  mapInterpolatorSection.append(
-    mapInterpolatorTitle,
-    mapInterpolatorControlsRow
-  );
+  mapInterpolatorSection.append(mapInterpolatorHeader, mapInterpolatorList);
 
-  overlay.append(
-    sizeField,
+  bodySection.append(
     useConcentrationToggle.row,
     concentrationSection,
     invertToggle.row,
     mapSection,
-    useMapInterpolatorToggle.row,
-    mapInterpolatorSection,
-    saveButton
+    mapInterpolatorSection
   );
+
+  overlay.append(topRow, bodySection, saveButton);
   root.appendChild(overlay);
   renderControls();
 
   return {
     overlay,
     sizeInput,
-    update(layout, visible) {
+    update(layout) {
       overlay.style.left = `${layout.menuX}px`;
       overlay.style.top = `${layout.menuY}px`;
       overlay.style.width = `${layout.menuWidth}px`;
       overlay.style.height = `${layout.menuHeight}px`;
-      overlay.style.opacity = String(layout.menuAlpha);
-      overlay.classList.toggle("menu-overlay--hidden", !visible);
     }
   };
 }
@@ -639,14 +810,13 @@ async function init() {
     ConcentrationFieldInterpolater
   );
   const mapGenerators = getGeneratorsByType(generators, MapGenerator);
-  const mapInterpolaters = getGeneratorsByType(generators, MapInterpolater);
   const selectionState = {
+    seed: "",
     useConcentrationField: false,
     invert: false,
-    useMapInterpolator: false,
     concentrationFieldGeneratorKey: concentrationFieldGenerators[0]?.getKey() ?? "",
     mapSelectionKey: mapGenerators[0]?.getKey() ?? "",
-    mapInterpolatorKey: mapInterpolaters[0]?.getKey() ?? ""
+    mapInterpolatorSelections: []
   };
 
   const generatorsByKey = new Map(
@@ -655,14 +825,14 @@ async function init() {
 
   let graph = buildDisplayGraph({
     size: DEFAULT_GRAPH_SIZE,
+    seed: selectionState.seed,
     useConcentrationField: selectionState.useConcentrationField,
     invert: selectionState.invert,
-    useMapInterpolator: selectionState.useMapInterpolator,
     concentrationFieldGenerator: generatorsByKey.get(
       selectionState.concentrationFieldGeneratorKey
     ),
     mapSelectionGenerator: generatorsByKey.get(selectionState.mapSelectionKey),
-    mapInterpolatorGenerator: generatorsByKey.get(selectionState.mapInterpolatorKey)
+    mapInterpolatorSelections: []
   });
   let graphDirty = true;
 
@@ -684,47 +854,53 @@ async function init() {
     selectionState,
     ({
       size,
+      seed,
       useConcentrationField,
       invert,
-      useMapInterpolator,
       concentrationFieldGeneratorKey,
       mapSelectionKey,
-      mapInterpolatorKey,
+      mapInterpolatorSelections,
       concentrationFieldParameterValues,
-      mapParameterValues,
-      mapInterpolatorParameterValues
+      mapParameterValues
     }) => {
+      selectionState.seed = seed;
       selectionState.useConcentrationField = useConcentrationField;
       selectionState.invert = invert;
-      selectionState.useMapInterpolator = useMapInterpolator;
       selectionState.concentrationFieldGeneratorKey = concentrationFieldGeneratorKey;
       selectionState.mapSelectionKey = mapSelectionKey;
-      selectionState.mapInterpolatorKey = mapInterpolatorKey;
+      selectionState.mapInterpolatorSelections = normalizeMapInterpolatorSelections(
+        mapInterpolatorSelections
+      );
 
       const concentrationFieldGenerator = generatorsByKey.get(
         concentrationFieldGeneratorKey
       );
       const mapSelectionGenerator = generatorsByKey.get(mapSelectionKey);
-      const mapInterpolatorGenerator = generatorsByKey.get(mapInterpolatorKey);
+      const resolvedMapInterpolatorSelections =
+        selectionState.mapInterpolatorSelections.map((selection) => ({
+          generator: generatorsByKey.get(selection.key),
+          parameterValues: cloneParameterValues(selection.parameterValues)
+        }));
 
       concentrationFieldGenerator?.setParameterValues(
         concentrationFieldParameterValues,
-        size
+        size,
+        ConcentrationFieldGenerator
       );
-      mapSelectionGenerator?.setParameterValues(mapParameterValues, size);
-      mapInterpolatorGenerator?.setParameterValues(
-        mapInterpolatorParameterValues,
-        size
+      mapSelectionGenerator?.setParameterValues(
+        mapParameterValues,
+        size,
+        getMapSelectionType(useConcentrationField)
       );
 
       graph = buildDisplayGraph({
         size,
+        seed,
         useConcentrationField,
         invert,
-        useMapInterpolator,
         concentrationFieldGenerator,
         mapSelectionGenerator,
-        mapInterpolatorGenerator
+        mapInterpolatorSelections: resolvedMapInterpolatorSelections
       });
 
       graphDirty = true;
@@ -754,7 +930,6 @@ async function init() {
       menuY: padding,
       menuWidth,
       menuHeight: screenHeight - padding * 2,
-      menuAlpha: 1,
       padding
     };
   }
@@ -787,9 +962,8 @@ async function init() {
       .stroke({ width: 2, color: 0x334155, alpha: 1 });
 
     menuArea.visible = true;
-    menuArea.alpha = layout.menuAlpha;
     menuArea.position.set(layout.menuX, layout.menuY);
-    menuOverlay.update(layout, true);
+    menuOverlay.update(layout);
 
     menuBackground
       .clear()
@@ -798,33 +972,16 @@ async function init() {
       .stroke({ width: 2, color: 0x334155, alpha: 1 });
   }
 
-  const targetLayout = computeLayout();
-  const currentLayout = { ...targetLayout };
+  let currentLayout = computeLayout();
 
-  function setTargetLayout() {
-    Object.assign(targetLayout, computeLayout());
+  function refreshLayout() {
+    currentLayout = computeLayout();
+    renderLayout(currentLayout);
+    graphDirty = false;
   }
 
-  app.ticker.add((ticker) => {
-    const easing = 1 - Math.pow(0.82, ticker.deltaTime);
-    let layoutDirty = graphDirty;
-
-    for (const key of Object.keys(targetLayout)) {
-      const delta = targetLayout[key] - currentLayout[key];
-
-      if (Math.abs(delta) < 0.1) {
-        if (currentLayout[key] !== targetLayout[key]) {
-          currentLayout[key] = targetLayout[key];
-          layoutDirty = true;
-        }
-        continue;
-      }
-
-      currentLayout[key] += delta * easing;
-      layoutDirty = true;
-    }
-
-    if (!layoutDirty) {
+  app.ticker.add(() => {
+    if (!graphDirty) {
       return;
     }
 
@@ -833,11 +990,10 @@ async function init() {
   });
 
   window.addEventListener("resize", () => {
-    setTargetLayout();
+    refreshLayout();
   });
 
-  renderLayout(currentLayout);
-  graphDirty = false;
+  refreshLayout();
 }
 
 init();

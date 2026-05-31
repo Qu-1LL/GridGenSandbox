@@ -32,6 +32,26 @@ export class XorShift32 {
 
     return this.state % modulo;
   }
+
+  nextFloat() {
+    // Returns a float in [0, 1), with 1 excluded.
+    return this.next() / 0x100000000;
+  }
+
+  nextFloatTo(maxExclusive) {
+    if (!Number.isFinite(maxExclusive) || maxExclusive < 0) {
+      throw new Error(
+        "XorShift32.nextFloatTo(maxExclusive) requires a finite non-negative upper bound."
+      );
+    }
+
+    return this.nextFloat() * maxExclusive;
+  }
+
+  nextSignedFloat() {
+    // Returns a float in (-1, 1), with both ends excluded.
+    return ((this.next() + 0.5) / 0x100000000) * 2 - 1;
+  }
 }
 
 function normalizeSeed(seed, fallbackSeed) {
@@ -127,6 +147,39 @@ export class Graph {
       tile.neighbors.left = this.getTile(tile.x - 1, tile.y);
     });
   }
+}
+
+export function normalizeConcentrationField(concentrationField) {
+  const normalizedGraph = new Graph(concentrationField.size);
+  let minValue = Number.POSITIVE_INFINITY;
+  let maxValue = Number.NEGATIVE_INFINITY;
+
+  concentrationField.forEachTile((tile) => {
+    const value = Number.isFinite(tile.value) ? tile.value : 0;
+
+    minValue = Math.min(minValue, value);
+    maxValue = Math.max(maxValue, value);
+  });
+
+  if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) {
+    return normalizedGraph;
+  }
+
+  const range = maxValue - minValue;
+
+  concentrationField.forEachTile((tile) => {
+    const normalizedTile = normalizedGraph.getTile(tile.x, tile.y);
+    const value = Number.isFinite(tile.value) ? tile.value : 0;
+
+    if (range <= 0) {
+      normalizedTile.value = 0;
+      return;
+    }
+
+    normalizedTile.value = ((value - minValue) / range) * 0.9999999;
+  });
+
+  return normalizedGraph;
 }
 
 export function checkeredPattern(graph) {

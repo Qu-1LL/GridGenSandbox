@@ -37,12 +37,27 @@ canvas {
   gap: 18px;
   padding: 20px 24px 24px;
   pointer-events: auto;
+  overflow: hidden;
 }
 
-.menu-overlay--hidden {
-  opacity: 0;
-  pointer-events: none;
-  visibility: hidden;
+.menu-overlay__top-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.menu-overlay__body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .menu-overlay__field {
@@ -71,6 +86,13 @@ canvas {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.menu-overlay__section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
 }
 
 .menu-overlay__controls {
@@ -177,9 +199,59 @@ canvas {
   min-width: 0;
 }
 
+.menu-overlay__interpolator-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.menu-overlay__interpolator-item {
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+  border: 1px solid rgba(71, 85, 105, 0.5);
+  background: rgba(2, 6, 23, 0.36);
+}
+
+.menu-overlay__field--icon {
+  justify-content: flex-end;
+}
+
+.menu-overlay__label--spacer {
+  visibility: hidden;
+}
+
+.menu-overlay__icon-button {
+  width: 34px;
+  height: 34px;
+  border: 1px solid #475569;
+  background: rgba(2, 6, 23, 0.92);
+  color: #f8fafc;
+  cursor: pointer;
+  font: inherit;
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 0;
+}
+
+.menu-overlay__icon-button:hover:not(:disabled) {
+  border-color: #38bdf8;
+  background: rgba(14, 165, 233, 0.18);
+}
+
+.menu-overlay__icon-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .menu-overlay__button {
   align-self: center;
-  margin-top: auto;
+  flex: 0 0 auto;
   width: min(100%, 180px);
   border: 1px solid #38bdf8;
   background:
