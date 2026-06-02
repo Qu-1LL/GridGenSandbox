@@ -930,26 +930,121 @@ export class DrunkardsWalk extends SelectableGenerator {
   }
 }
 
-function weightedMove(weights, random) {
-
-  let totalWeight = 0
-  for (let i = 0; i < weights.length; i++) {
-    totalWeight += weights[i].value
+function getWeightValue(value) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
   }
 
-  let myWeight = random.nextFloatTo(totalWeight)
+  return value;
+}
 
-  for (let i = 0; i < weights.length; i++) {
-    myWeight -= weights[i].value
-    if (myWeight <= 0) {
-      return i
+function weightedMove(weights, random) {
+  if (!Array.isArray(weights) || weights.length === 0) {
+    return null;
+  }
+
+  let totalWeight = 0;
+
+  for (let i = 0; i < weights.length; i += 1) {
+    totalWeight += getWeightValue(weights[i]?.value);
+  }
+
+  if (totalWeight <= 0) {
+    return random.next(weights.length);
+  }
+
+  let remainingWeight = random.nextFloatTo(totalWeight);
+  let fallbackIndex = null;
+
+  for (let i = 0; i < weights.length; i += 1) {
+    const weight = getWeightValue(weights[i]?.value);
+
+    if (weight <= 0) {
+      continue;
+    }
+
+    fallbackIndex = i;
+    remainingWeight -= weight;
+
+    if (remainingWeight < 0 || remainingWeight === 0) {
+      return i;
     }
   }
 
-  return null
+  return fallbackIndex ?? random.next(weights.length);
 }
 
-class Region {
+function pickWeightedTile(graph, random, predicate = null) {
+  if (!graph) {
+    return null;
+  }
+
+  let candidateCount = 0;
+  let totalWeight = 0;
+
+  for (const row of graph.tiles) {
+    for (const tile of row) {
+      if (predicate && !predicate(tile)) {
+        continue;
+      }
+
+      candidateCount += 1;
+      totalWeight += getWeightValue(tile.value);
+    }
+  }
+
+  if (candidateCount === 0) {
+    return null;
+  }
+
+  if (totalWeight <= 0) {
+    let remainingCandidates = random.next(candidateCount);
+
+    for (const row of graph.tiles) {
+      for (const tile of row) {
+        if (predicate && !predicate(tile)) {
+          continue;
+        }
+
+        if (remainingCandidates === 0) {
+          return tile;
+        }
+
+        remainingCandidates -= 1;
+      }
+    }
+
+    return null;
+  }
+
+  let remainingWeight = random.nextFloatTo(totalWeight);
+  let fallbackTile = null;
+
+  for (const row of graph.tiles) {
+    for (const tile of row) {
+      if (predicate && !predicate(tile)) {
+        continue;
+      }
+
+      const weight = getWeightValue(tile.value);
+
+      if (weight <= 0) {
+        continue;
+      }
+
+      fallbackTile = tile;
+      remainingWeight -= weight;
+
+      if (remainingWeight < 0 || remainingWeight === 0) {
+        return tile;
+      }
+    }
+  }
+
+  return fallbackTile;
+}
+
+class VoronoiRegion {
 
     constructor(catalyst) {
       this.tiles = new Set()
@@ -1039,7 +1134,7 @@ export class VoronoiRegions extends SelectableGenerator {
       const myTile = graph.getTile(x, y)
       if (!chosen.has(myTile)) {
         chosen.add(myTile)
-        const region = new Region(myTile)
+        const region = new VoronoiRegion(myTile)
         regions.add(region)
       }
       
@@ -1087,10 +1182,9 @@ export class VoronoiRegions extends SelectableGenerator {
       const myTile = graph.getTile(x, y)
       if (!chosen.has(myTile)) {
         chosen.add(myTile)
-        const region = new Region(myTile)
+        const region = new VoronoiRegion(myTile)
         regions.add(region)
       }
-      
     }
 
     while (regions.size > 0) {
@@ -1128,7 +1222,7 @@ export class DiffusionLimitedAggregation extends SelectableGenerator {
         valueType: GeneratorValueType.INTEGER,
         getLimits: (size) => ({
           lower: 1,
-          upper: Math.ceil(size / 50) + 1
+          upper: Math.ceil(size / 5) + 1
         })
       },
       {
@@ -1143,15 +1237,304 @@ export class DiffusionLimitedAggregation extends SelectableGenerator {
     ];
   }
 
-  generateMap(size, seed) {
-    void size;
-    void seed;
+  generateMap(
+    size, 
+    seed,
+    catalysts = this.getParameterValue("catalysts", MapGenerator),
+    density = this.getParameterValue("density", MapGenerator)
+  ) {
+    const graph = new Graph(size);
+    const random = new XorShift32(seed);
+
+    return this.runAggregation({
+      graph,
+      random,
+      catalysts,
+      targetOccupiedTiles: this.getTargetOccupiedTileCount(size, density),
+      pickCatalystTile: ({ pickRandomEmptyTile, isCatalystSafeTile }) =>
+        pickRandomEmptyTile(isCatalystSafeTile),
+      pickWalkerStep: ({ openNeighbors, random }) =>
+        openNeighbors[random.next(openNeighbors.length)] ?? null
+    });
   }
 
-  interpolateConcentrationField(concentrationField, seed) {
-    void concentrationField;
-    void seed;
-    return null;
+  interpolateConcentrationField(
+    concentrationField,
+    seed,
+    catalysts = this.getParameterValue("catalysts", ConcentrationFieldInterpolater),
+    density = this.getParameterValue("density", ConcentrationFieldInterpolater)
+  ) {
+    const graph = new Graph(concentrationField.size);
+    const random = new XorShift32(seed);
+
+    return this.runAggregation({
+      graph,
+      random,
+      catalysts,
+      targetOccupiedTiles: this.getTargetOccupiedTileCount(
+        concentrationField.size,
+        density
+      ),
+      pickCatalystTile: ({
+        graph: aggregateGraph,
+        pickRandomEmptyTile,
+        isCatalystSafeTile
+      }) => {
+        const weightedTile = pickWeightedTile(
+          concentrationField,
+          random,
+          (weightTile) => {
+            const aggregateTile = aggregateGraph.getTile(weightTile.x, weightTile.y);
+            return isCatalystSafeTile(aggregateTile);
+          }
+        );
+
+        if (weightedTile) {
+          return aggregateGraph.getTile(weightedTile.x, weightedTile.y);
+        }
+
+        return pickRandomEmptyTile(isCatalystSafeTile);
+      },
+      pickWalkerStep: ({ openNeighbors, random }) => {
+        const weightedNeighbors = openNeighbors.map((neighbor) =>
+          concentrationField.getTile(neighbor.x, neighbor.y)
+        );
+        const selectedIndex = weightedMove(weightedNeighbors, random);
+
+        if (selectedIndex === null) {
+          return null;
+        }
+
+        return openNeighbors[selectedIndex] ?? null;
+      }
+    });
+  }
+
+  getTargetOccupiedTileCount(size, density) {
+    const totalTiles = size * size;
+
+    return Math.max(0, Math.min(totalTiles, Math.round(totalTiles * density)));
+  }
+
+  runAggregation({
+    graph,
+    random,
+    catalysts,
+    targetOccupiedTiles,
+    pickCatalystTile,
+    pickWalkerStep
+  }) {
+    if (targetOccupiedTiles === 0) {
+      return graph;
+    }
+
+    const size = graph.size;
+    const totalTiles = size * size;
+    let occupiedCount = 0;
+    const bounds = {
+      minX: size,
+      maxX: -1,
+      minY: size,
+      maxY: -1
+    };
+    const maxActiveWalkers = Math.max(1, Math.floor(size / 10));
+    const maxWalkerSteps = Math.max(1, size * 10);
+    const catalystEdgePadding = Math.floor(size / 10);
+    const catalystSafeZoneSize = Math.max(0, size - catalystEdgePadding * 2);
+    const hasCatalystSafeZone = catalystSafeZoneSize > 0;
+    const maxCatalystSafeZoneTiles = hasCatalystSafeZone
+      ? catalystSafeZoneSize * catalystSafeZoneSize
+      : totalTiles;
+
+    function updateBounds(tile) {
+      bounds.minX = Math.min(bounds.minX, tile.x);
+      bounds.maxX = Math.max(bounds.maxX, tile.x);
+      bounds.minY = Math.min(bounds.minY, tile.y);
+      bounds.maxY = Math.max(bounds.maxY, tile.y);
+    }
+
+    function occupyTile(tile) {
+      if (!tile || tile.value === 1) {
+        return false;
+      }
+
+      tile.value = 1;
+      occupiedCount += 1;
+      updateBounds(tile);
+      return true;
+    }
+
+    function getNeighbors(tile) {
+      return Object.values(tile.neighbors).filter((neighbor) => neighbor !== null);
+    }
+
+    function hasOccupiedNeighbor(tile) {
+      return getNeighbors(tile).some((neighbor) => neighbor.value === 1);
+    }
+
+    function canWalkerStick(tile) {
+      return tile?.value === 0 && hasOccupiedNeighbor(tile);
+    }
+
+    function isEmptyNonStickingTile(tile) {
+      return tile?.value === 0 && !hasOccupiedNeighbor(tile);
+    }
+
+    function isCatalystSafeTile(tile) {
+      if (tile?.value !== 0) {
+        return false;
+      }
+
+      if (!hasCatalystSafeZone) {
+        return true;
+      }
+
+      return (
+        tile.x >= catalystEdgePadding &&
+        tile.x < size - catalystEdgePadding &&
+        tile.y >= catalystEdgePadding &&
+        tile.y < size - catalystEdgePadding
+      );
+    }
+
+    function pickRandomEmptyTile(predicate = null) {
+      const maxAttempts = Math.max(size * 4, 16);
+
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const tile = graph.getTile(random.next(size), random.next(size));
+
+        if (tile?.value === 0 && (!predicate || predicate(tile))) {
+          return tile;
+        }
+      }
+
+      for (const row of graph.tiles) {
+        for (const tile of row) {
+          if (tile.value === 0 && (!predicate || predicate(tile))) {
+            return tile;
+          }
+        }
+      }
+
+      return null;
+    }
+
+    function pickWalkerSpawnTile() {
+      return pickRandomEmptyTile();
+    }
+
+    function createWalker() {
+      const tile = pickWalkerSpawnTile();
+
+      if (!tile) {
+        return null;
+      }
+
+      return {
+        tile,
+        stepsTaken: 0
+      };
+    }
+
+    const catalystCount = Math.min(
+      targetOccupiedTiles,
+      catalysts,
+      maxCatalystSafeZoneTiles
+    );
+
+    for (let i = 0; i < catalystCount; i += 1) {
+      const catalystTile =
+        pickCatalystTile({
+          graph,
+          random,
+          isCatalystSafeTile,
+          pickRandomEmptyTile
+        }) ??
+        pickRandomEmptyTile(isCatalystSafeTile) ??
+        pickRandomEmptyTile();
+
+      if (!occupyTile(catalystTile)) {
+        break;
+      }
+    }
+
+    const activeWalkers = [];
+
+    function refillWalkers() {
+      while (
+        activeWalkers.length < maxActiveWalkers &&
+        occupiedCount < targetOccupiedTiles
+      ) {
+        const walker = createWalker();
+
+        if (!walker) {
+          break;
+        }
+
+        activeWalkers.push(walker);
+      }
+    }
+
+    refillWalkers();
+
+    while (occupiedCount < targetOccupiedTiles && activeWalkers.length > 0) {
+      for (
+        let walkerIndex = activeWalkers.length - 1;
+        walkerIndex >= 0 && occupiedCount < targetOccupiedTiles;
+        walkerIndex -= 1
+      ) {
+        const walker = activeWalkers[walkerIndex];
+
+        if (!walker?.tile || walker.tile.value === 1) {
+          activeWalkers.splice(walkerIndex, 1);
+          continue;
+        }
+
+        if (canWalkerStick(walker.tile)) {
+          occupyTile(walker.tile);
+          activeWalkers.splice(walkerIndex, 1);
+          continue;
+        }
+
+        const openNeighbors = getNeighbors(walker.tile).filter(
+          (neighbor) => neighbor.value === 0
+        );
+
+        if (openNeighbors.length === 0) {
+          activeWalkers.splice(walkerIndex, 1);
+          continue;
+        }
+
+        const nextTile = pickWalkerStep({
+          graph,
+          random,
+          walker,
+          openNeighbors
+        });
+
+        if (!nextTile || nextTile.value !== 0) {
+          activeWalkers.splice(walkerIndex, 1);
+          continue;
+        }
+
+        walker.tile = nextTile;
+        walker.stepsTaken += 1;
+
+        if (canWalkerStick(walker.tile)) {
+          occupyTile(walker.tile);
+          activeWalkers.splice(walkerIndex, 1);
+          continue;
+        }
+
+        if (walker.stepsTaken >= maxWalkerSteps) {
+          activeWalkers.splice(walkerIndex, 1);
+        }
+      }
+
+      refillWalkers();
+    }
+
+    return graph;
   }
 }
 
@@ -1181,24 +1564,72 @@ export class FloodFill extends SelectableGenerator {
     ];
   }
 
-  interpolateMap(map, seed) {
+  interpolateMap(
+    map,
+    seed,
+    minimumRegionSize = this.getParameterValue("minimumRegionSize", MapInterpolater)
+  ) {
     void seed;
 
     const graph = map;
-    graph.forEachTile((tile) => {
-      let floorCount = 0
-      for (let neighbor of Object.values(tile.neighbors)) {
-        if (!neighbor) {
-          floorCount++
-          continue;
-        }
 
-        floorCount += neighbor.value;
+    const isolatedFloorTiles = [];
+
+    graph.forEachTile((tile) => {
+      if (tile.value !== 1) {
+        return;
       }
-      if (floorCount === 0) {
-        tile.value = 0
+
+      let adjacentFloorCount = 0;
+
+      for (const neighbor of Object.values(tile.neighbors)) {
+        if (neighbor?.value === 1) {
+          adjacentFloorCount += 1;
+        }
       }
-    })
+
+      if (adjacentFloorCount === 0) {
+        isolatedFloorTiles.push(tile);
+      }
+    });
+
+    for (const tile of isolatedFloorTiles) {
+      tile.value = 0;
+    }
+
+    const visited = new Set();
+
+    graph.forEachTile((tile) => {
+      if (tile.value !== 1 || visited.has(tile)) {
+        return;
+      }
+
+      const region = [];
+      const queue = [tile];
+      visited.add(tile);
+
+      while (queue.length > 0) {
+        const currentTile = queue.shift();
+        region.push(currentTile);
+
+        for (const neighbor of Object.values(currentTile.neighbors)) {
+          if (!neighbor || neighbor.value !== 1 || visited.has(neighbor)) {
+            continue;
+          }
+
+          visited.add(neighbor);
+          queue.push(neighbor);
+        }
+      }
+
+      if (region.length >= minimumRegionSize) {
+        return;
+      }
+
+      for (const regionTile of region) {
+        regionTile.value = 0;
+      }
+    });
 
     return graph;
   }
