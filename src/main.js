@@ -1,6 +1,8 @@
 import "./style.css";
 import { Application, Container, Graphics } from "pixi.js";
 import {
+  BiomeGenerator,
+  BiomeInterpolater,
   ConcentrationFieldGenerator,
   ConcentrationFieldInterpolater,
   createSelectableGenerators,
@@ -14,6 +16,8 @@ import { Graph, invertGraph } from "./graphHandler.js";
 const DEFAULT_GRAPH_SIZE = 100;
 const MIN_GRAPH_SIZE = 1;
 const MAX_GRAPH_SIZE = 1000;
+const DLA_MAX_GRAPH_SIZE = 200;
+const DLA_GENERATOR_KEY = "diffusion-limited-aggregation";
 const MAX_MAP_INTERPOLATORS = 3;
 
 function createRandomSeed() {
@@ -49,14 +53,14 @@ function normalizeMapInterpolatorSelections(selections) {
     .map((selection) => cloneMapInterpolatorSelection(selection));
 }
 
-function normalizeGraphSize(value) {
+function normalizeGraphSize(value, maxGraphSize = MAX_GRAPH_SIZE) {
   const parsed = Number.parseInt(value, 10);
 
   if (Number.isNaN(parsed)) {
-    return DEFAULT_GRAPH_SIZE;
+    return clamp(DEFAULT_GRAPH_SIZE, MIN_GRAPH_SIZE, maxGraphSize);
   }
 
-  return clamp(parsed, MIN_GRAPH_SIZE, MAX_GRAPH_SIZE);
+  return clamp(parsed, MIN_GRAPH_SIZE, maxGraphSize);
 }
 
 function sanitizeSeedInputValue(value) {
@@ -204,6 +208,32 @@ function resolveInterpolatedMap(generator, sourceMap, seed) {
   return new Graph(sourceMap.size);
 }
 
+function resolveGeneratedBiomeGraph(generator, map, seed) {
+  const generatedGraph =
+    typeof generator?.generateBiomes === "function"
+      ? generator.generateBiomes(map, seed)
+      : null;
+
+  if (isGraph(generatedGraph) && generatedGraph.size === map.size) {
+    return generatedGraph;
+  }
+
+  return map;
+}
+
+function resolveInterpolatedBiomes(generator, map, seed) {
+  const generatedGraph =
+    typeof generator?.interpolateBiomes === "function"
+      ? generator.interpolateBiomes(map, seed)
+      : null;
+
+  if (isGraph(generatedGraph) && generatedGraph.size === map.size) {
+    return generatedGraph;
+  }
+
+  return map;
+}
+
 function buildDisplayGraph({
   size,
   seed,
@@ -211,7 +241,11 @@ function buildDisplayGraph({
   invert,
   concentrationFieldGenerator,
   mapSelectionGenerator,
-  mapInterpolatorSelections = []
+  mapInterpolatorSelections = [],
+  useBiomeGeneration,
+  biomeInterpolateFromMap,
+  biomeGenerator,
+  biomeInterpolater
 }) {
   const runSeed = seed === "" ? createRandomSeed() : seed;
   let map;
@@ -257,7 +291,15 @@ function buildDisplayGraph({
     currentMap = resolveInterpolatedMap(generator, currentMap, runSeed);
   }
 
-  return currentMap;
+  if (!useBiomeGeneration) {
+    return currentMap;
+  }
+
+  if (biomeInterpolateFromMap) {
+    return resolveInterpolatedBiomes(biomeInterpolater, currentMap, runSeed);
+  }
+
+  return resolveGeneratedBiomeGraph(biomeGenerator, currentMap, runSeed);
 }
 
 function getGeneratorsByType(generators, type) {
@@ -276,6 +318,19 @@ function ensureGeneratorKey(generators, currentKey) {
   return generators.find((generator) => generator.getKey() === currentKey)?.getKey() ??
     generators[0]?.getKey() ??
     "";
+}
+
+function renderGeneratorSelectOptions(select, generators, selectedKey) {
+  select.replaceChildren();
+
+  for (const generator of generators) {
+    const option = document.createElement("option");
+    option.value = generator.getKey();
+    option.textContent = generator.getLabel();
+    select.appendChild(option);
+  }
+
+  select.value = ensureGeneratorKey(generators, selectedKey);
 }
 
 function createToggleRow(labelText, checked) {
@@ -315,8 +370,14 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
   );
   const mapGenerators = getGeneratorsByType(generators, MapGenerator);
   const mapInterpolaters = getGeneratorsByType(generators, MapInterpolater);
+  const biomeGenerators = getGeneratorsByType(generators, BiomeGenerator);
+  const biomeInterpolaters = getGeneratorsByType(generators, BiomeInterpolater);
   const selectionState = {
     ...initialSelection,
+    useBiomeGeneration: initialSelection.useBiomeGeneration ?? false,
+    biomeInterpolateFromMap: initialSelection.biomeInterpolateFromMap ?? false,
+    biomeGeneratorKey: initialSelection.biomeGeneratorKey ?? "",
+    biomeInterpolaterKey: initialSelection.biomeInterpolaterKey ?? "",
     mapInterpolatorSelections: normalizeMapInterpolatorSelections(
       initialSelection.mapInterpolatorSelections
     )
@@ -365,6 +426,14 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
     selectionState.useConcentrationField
   );
   const invertToggle = createToggleRow("Invert", selectionState.invert);
+  const useBiomeGenerationToggle = createToggleRow(
+    "Enabled",
+    selectionState.useBiomeGeneration
+  );
+  const biomeInterpolateFromMapToggle = createToggleRow(
+    "Interpolate From Map",
+    selectionState.biomeInterpolateFromMap
+  );
 
   const concentrationSection = document.createElement("div");
   concentrationSection.className = "menu-overlay__section";
@@ -448,7 +517,45 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
 
   const mapInterpolatorList = document.createElement("div");
   mapInterpolatorList.className = "menu-overlay__interpolator-list";
+
+  const biomeSection = document.createElement("div");
+  biomeSection.className = "menu-overlay__section";
+
+  const biomeHeader = document.createElement("div");
+  biomeHeader.className = "menu-overlay__section-header";
+
+  const biomeTitle = document.createElement("div");
+  biomeTitle.className = "menu-overlay__section-title";
+  biomeTitle.textContent = "Generate Biomes";
+
+  biomeHeader.append(biomeTitle, useBiomeGenerationToggle.row);
+
+  const biomeContent = document.createElement("div");
+  biomeContent.className = "menu-overlay__section-content";
+
+  const biomeControlsRow = document.createElement("div");
+  biomeControlsRow.className = "menu-overlay__controls";
+
+  const biomeField = document.createElement("label");
+  biomeField.className = "menu-overlay__field";
+
+  const biomeFieldLabel = document.createElement("span");
+  biomeFieldLabel.className = "menu-overlay__label";
+  biomeFieldLabel.textContent = "Method";
+
+  const biomeSelect = document.createElement("select");
+  biomeSelect.className = "menu-overlay__select";
+
+  biomeField.append(biomeFieldLabel, biomeSelect);
+
+  const biomeParameterFields = document.createElement("div");
+  biomeParameterFields.className = "menu-overlay__parameters";
+  const biomeParameterInputs = new Map();
+
   let mapInterpolatorRenderState = [];
+  let biomeGeneratorDraftValues = {};
+  let biomeInterpolaterDraftValues = {};
+  let renderedBiomeInterpolateFromMap = selectionState.biomeInterpolateFromMap;
   const saveButton = document.createElement("button");
   saveButton.className = "menu-overlay__button";
   saveButton.type = "button";
@@ -467,6 +574,39 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
     };
   }
 
+  function getBiomeSelectionPool() {
+    return selectionState.biomeInterpolateFromMap
+      ? biomeInterpolaters
+      : biomeGenerators;
+  }
+
+  function getBiomeSelectionType() {
+    return selectionState.biomeInterpolateFromMap
+      ? BiomeInterpolater
+      : BiomeGenerator;
+  }
+
+  function getSelectedBiomeKey() {
+    return selectionState.biomeInterpolateFromMap
+      ? selectionState.biomeInterpolaterKey
+      : selectionState.biomeGeneratorKey;
+  }
+
+  function setSelectedBiomeKey(key) {
+    if (selectionState.biomeInterpolateFromMap) {
+      selectionState.biomeInterpolaterKey = key;
+      return;
+    }
+
+    selectionState.biomeGeneratorKey = key;
+  }
+
+  function getSelectedGraphSizeMax() {
+    return selectionState.mapSelectionKey === DLA_GENERATOR_KEY
+      ? DLA_MAX_GRAPH_SIZE
+      : MAX_GRAPH_SIZE;
+  }
+
   function syncSelections() {
     selectionState.concentrationFieldGeneratorKey = ensureGeneratorKey(
       concentrationFieldGenerators,
@@ -482,6 +622,14 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
         key: ensureGeneratorKey(mapInterpolaters, selection.key),
         parameterValues: cloneParameterValues(selection.parameterValues)
       }));
+    selectionState.biomeGeneratorKey = ensureGeneratorKey(
+      biomeGenerators,
+      selectionState.biomeGeneratorKey
+    );
+    selectionState.biomeInterpolaterKey = ensureGeneratorKey(
+      biomeInterpolaters,
+      selectionState.biomeInterpolaterKey
+    );
   }
 
   function getSelectedGenerator(key) {
@@ -537,7 +685,9 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
         parameterInput.type = "text";
         parameterInput.value = draftValues[parameter.name] ?? parameter.value ?? "";
       } else {
-        const { lower, upper } = parameter.getLimits(normalizeGraphSize(sizeInput.value));
+        const { lower, upper } = parameter.getLimits(
+          normalizeGraphSize(sizeInput.value, getSelectedGraphSizeMax())
+        );
 
         parameterInput = document.createElement("input");
         parameterInput.className = "menu-overlay__input";
@@ -589,6 +739,17 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
         };
       }
     );
+  }
+
+  function syncBiomeDraftValues() {
+    const draftValues = readInputValues(biomeParameterInputs);
+
+    if (renderedBiomeInterpolateFromMap) {
+      biomeInterpolaterDraftValues = draftValues;
+      return;
+    }
+
+    biomeGeneratorDraftValues = draftValues;
   }
 
   function renderMapInterpolatorSections() {
@@ -676,11 +837,12 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
   }
 
   function handleSave() {
-    const nextSize = normalizeGraphSize(sizeInput.value);
+    const nextSize = normalizeGraphSize(sizeInput.value, getSelectedGraphSizeMax());
     const nextSeed = normalizeSeedInputValue(seedInput.value);
     const concentrationFieldParameterValues = {};
     const mapParameterValues = {};
     syncMapInterpolatorDraftValues();
+    syncBiomeDraftValues();
 
     sizeInput.value = String(nextSize);
     seedInput.value = formatSeedInputValue(nextSeed);
@@ -698,8 +860,12 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
       seed: nextSeed,
       useConcentrationField: selectionState.useConcentrationField,
       invert: selectionState.invert,
+      useBiomeGeneration: selectionState.useBiomeGeneration,
+      biomeInterpolateFromMap: selectionState.biomeInterpolateFromMap,
       concentrationFieldGeneratorKey: selectionState.concentrationFieldGeneratorKey,
       mapSelectionKey: selectionState.mapSelectionKey,
+      biomeGeneratorKey: selectionState.biomeGeneratorKey,
+      biomeInterpolaterKey: selectionState.biomeInterpolaterKey,
       mapInterpolatorSelections: selectionState.mapInterpolatorSelections.map(
         (selection) => ({
           key: selection.key,
@@ -707,7 +873,11 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
         })
       ),
       concentrationFieldParameterValues,
-      mapParameterValues
+      mapParameterValues,
+      biomeGeneratorParameterValues: cloneParameterValues(biomeGeneratorDraftValues),
+      biomeInterpolaterParameterValues: cloneParameterValues(
+        biomeInterpolaterDraftValues
+      )
     });
 
     renderControls();
@@ -731,18 +901,36 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
     const concentrationDraftValues = readInputValues(concentrationParameterInputs);
     const mapDraftValues = readInputValues(mapParameterInputs);
     syncMapInterpolatorDraftValues();
+    syncBiomeDraftValues();
     const mapSelectionType = getMapSelectionType(
       selectionState.useConcentrationField
     );
+    const biomeSelectionType = getBiomeSelectionType();
+    const biomeDraftValues = selectionState.biomeInterpolateFromMap
+      ? biomeInterpolaterDraftValues
+      : biomeGeneratorDraftValues;
 
     syncSelections();
 
+    const selectedGraphSizeMax = getSelectedGraphSizeMax();
+
+    sizeInput.max = String(selectedGraphSizeMax);
+
     concentrationSelect.value = selectionState.concentrationFieldGeneratorKey;
     renderMapSelectOptions();
+    renderGeneratorSelectOptions(
+      biomeSelect,
+      getBiomeSelectionPool(),
+      getSelectedBiomeKey()
+    );
 
     concentrationSection.classList.toggle(
       "menu-overlay__section--hidden",
       !selectionState.useConcentrationField
+    );
+    biomeContent.classList.toggle(
+      "menu-overlay__section-content--hidden",
+      !selectionState.useBiomeGeneration
     );
 
     renderGeneratorParameterFields(
@@ -761,10 +949,23 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
       mapSelectionType,
       mapDraftValues
     );
+    renderGeneratorParameterFields(
+      biomeParameterFields,
+      biomeParameterInputs,
+      selectionState.useBiomeGeneration
+        ? getSelectedGenerator(getSelectedBiomeKey())
+        : null,
+      biomeSelectionType,
+      biomeDraftValues
+    );
     renderMapInterpolatorSections();
 
+    renderedBiomeInterpolateFromMap = selectionState.biomeInterpolateFromMap;
     useConcentrationToggle.input.checked = selectionState.useConcentrationField;
     invertToggle.input.checked = selectionState.invert;
+    useBiomeGenerationToggle.input.checked = selectionState.useBiomeGeneration;
+    biomeInterpolateFromMapToggle.input.checked =
+      selectionState.biomeInterpolateFromMap;
   }
 
   concentrationSelect.addEventListener("change", () => {
@@ -774,6 +975,23 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
 
   mapSelect.addEventListener("change", () => {
     selectionState.mapSelectionKey = mapSelect.value;
+    renderControls();
+  });
+
+  biomeSelect.addEventListener("change", () => {
+    setSelectedBiomeKey(biomeSelect.value);
+    renderControls();
+  });
+
+  useBiomeGenerationToggle.input.addEventListener("change", () => {
+    selectionState.useBiomeGeneration = useBiomeGenerationToggle.input.checked;
+    renderControls();
+  });
+
+  biomeInterpolateFromMapToggle.input.addEventListener("change", () => {
+    syncBiomeDraftValues();
+    selectionState.biomeInterpolateFromMap =
+      biomeInterpolateFromMapToggle.input.checked;
     renderControls();
   });
 
@@ -798,7 +1016,9 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
   });
 
   sizeInput.addEventListener("change", () => {
-    sizeInput.value = String(normalizeGraphSize(sizeInput.value));
+    sizeInput.value = String(
+      normalizeGraphSize(sizeInput.value, getSelectedGraphSizeMax())
+    );
     renderControls();
   });
 
@@ -827,12 +1047,17 @@ function createMenuOverlay(root, initialSize, generators, initialSelection, onSa
 
   mapInterpolatorSection.append(mapInterpolatorHeader, mapInterpolatorList);
 
+  biomeControlsRow.append(biomeField, biomeParameterFields);
+  biomeContent.append(biomeInterpolateFromMapToggle.row, biomeControlsRow);
+  biomeSection.append(biomeHeader, biomeContent);
+
   bodySection.append(
     useConcentrationToggle.row,
     concentrationSection,
     invertToggle.row,
     mapSection,
-    mapInterpolatorSection
+    mapInterpolatorSection,
+    biomeSection
   );
 
   overlay.append(topRow, bodySection, saveButton);
@@ -876,8 +1101,12 @@ async function init() {
     seed: "",
     useConcentrationField: false,
     invert: false,
+    useBiomeGeneration: false,
+    biomeInterpolateFromMap: false,
     concentrationFieldGeneratorKey: concentrationFieldGenerators[0]?.getKey() ?? "",
     mapSelectionKey: mapGenerators[0]?.getKey() ?? "",
+    biomeGeneratorKey: "",
+    biomeInterpolaterKey: "",
     mapInterpolatorSelections: []
   };
 
@@ -890,11 +1119,15 @@ async function init() {
     seed: selectionState.seed,
     useConcentrationField: selectionState.useConcentrationField,
     invert: selectionState.invert,
+    useBiomeGeneration: selectionState.useBiomeGeneration,
+    biomeInterpolateFromMap: selectionState.biomeInterpolateFromMap,
     concentrationFieldGenerator: generatorsByKey.get(
       selectionState.concentrationFieldGeneratorKey
     ),
     mapSelectionGenerator: generatorsByKey.get(selectionState.mapSelectionKey),
-    mapInterpolatorSelections: []
+    mapInterpolatorSelections: [],
+    biomeGenerator: generatorsByKey.get(selectionState.biomeGeneratorKey),
+    biomeInterpolater: generatorsByKey.get(selectionState.biomeInterpolaterKey)
   });
   let graphDirty = true;
 
@@ -919,17 +1152,27 @@ async function init() {
       seed,
       useConcentrationField,
       invert,
+      useBiomeGeneration,
+      biomeInterpolateFromMap,
       concentrationFieldGeneratorKey,
       mapSelectionKey,
+      biomeGeneratorKey,
+      biomeInterpolaterKey,
       mapInterpolatorSelections,
       concentrationFieldParameterValues,
-      mapParameterValues
+      mapParameterValues,
+      biomeGeneratorParameterValues,
+      biomeInterpolaterParameterValues
     }) => {
       selectionState.seed = seed;
       selectionState.useConcentrationField = useConcentrationField;
       selectionState.invert = invert;
+      selectionState.useBiomeGeneration = useBiomeGeneration;
+      selectionState.biomeInterpolateFromMap = biomeInterpolateFromMap;
       selectionState.concentrationFieldGeneratorKey = concentrationFieldGeneratorKey;
       selectionState.mapSelectionKey = mapSelectionKey;
+      selectionState.biomeGeneratorKey = biomeGeneratorKey;
+      selectionState.biomeInterpolaterKey = biomeInterpolaterKey;
       selectionState.mapInterpolatorSelections = normalizeMapInterpolatorSelections(
         mapInterpolatorSelections
       );
@@ -938,6 +1181,8 @@ async function init() {
         concentrationFieldGeneratorKey
       );
       const mapSelectionGenerator = generatorsByKey.get(mapSelectionKey);
+      const biomeGenerator = generatorsByKey.get(biomeGeneratorKey);
+      const biomeInterpolater = generatorsByKey.get(biomeInterpolaterKey);
       const resolvedMapInterpolatorSelections =
         selectionState.mapInterpolatorSelections.map((selection) => ({
           generator: generatorsByKey.get(selection.key),
@@ -954,15 +1199,29 @@ async function init() {
         size,
         getMapSelectionType(useConcentrationField)
       );
+      biomeGenerator?.setParameterValues(
+        biomeGeneratorParameterValues,
+        size,
+        BiomeGenerator
+      );
+      biomeInterpolater?.setParameterValues(
+        biomeInterpolaterParameterValues,
+        size,
+        BiomeInterpolater
+      );
 
       graph = buildDisplayGraph({
         size,
         seed,
         useConcentrationField,
         invert,
+        useBiomeGeneration,
+        biomeInterpolateFromMap,
         concentrationFieldGenerator,
         mapSelectionGenerator,
-        mapInterpolatorSelections: resolvedMapInterpolatorSelections
+        mapInterpolatorSelections: resolvedMapInterpolatorSelections,
+        biomeGenerator,
+        biomeInterpolater
       });
 
       graphDirty = true;
@@ -996,6 +1255,40 @@ async function init() {
     };
   }
 
+  function parseBiomeColor(biome) {
+    if (typeof biome === "number" && Number.isFinite(biome)) {
+      return biome;
+    }
+
+    if (typeof biome !== "string") {
+      return null;
+    }
+
+    let normalized = biome.trim().replace(/^#/, "").replace(/^0x/i, "");
+
+    if (/^[\da-fA-F]{3}$/.test(normalized)) {
+      normalized = normalized
+        .split("")
+        .map((character) => `${character}${character}`)
+        .join("");
+    }
+
+    if (!/^[\da-fA-F]{6}$/.test(normalized)) {
+      return null;
+    }
+
+    return Number.parseInt(normalized, 16);
+  }
+
+  function getTileFillColor(tile) {
+    if (tile.value !== 1) {
+      return 0x000000;
+    }
+
+    const biomeColor = parseBiomeColor(tile.biome);
+    return biomeColor ?? 0xffffff;
+  }
+
   function drawGraph(squareSize) {
     graphLayer.clear();
 
@@ -1004,7 +1297,7 @@ async function init() {
     graph.forEachTile((tile) => {
       graphLayer
         .rect(tile.x * tileSize, tile.y * tileSize, tileSize, tileSize)
-        .fill(tile.value === 1 ? 0xffffff : 0x000000);
+        .fill(getTileFillColor(tile));
     });
   }
 

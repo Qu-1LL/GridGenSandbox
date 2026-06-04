@@ -100,10 +100,11 @@ function safeStringifySeed(seed) {
 }
 
 export class Tile {
-  constructor(x, y, value) {
+  constructor(x, y, value, biome = null) {
     this.x = x;
     this.y = y;
     this.value = value;
+    this.biome = biome;
     this.neighbors = {
       up: null,
       right: null,

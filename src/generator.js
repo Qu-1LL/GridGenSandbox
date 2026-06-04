@@ -83,6 +83,24 @@ export class MapInterpolater {
   }
 }
 
+// Interface-like contract for a biome generator using an existing map.
+export class BiomeGenerator {
+  generateBiomes(map, seed) {
+    throw new Error(
+      "BiomeGenerator.generateBiomes must be implemented."
+    );
+  }
+}
+
+// Interface-like contract for a biome generator using a full map.
+export class BiomeInterpolater {
+  interpolateBiomes(map, seed) {
+    throw new Error(
+      "BiomeInterpolater.interpolateBiomes must be implemented."
+    );
+  }
+}
+
 export class SelectableGenerator {
   constructor(key, label, parameters = {}, implementedTypes = []) {
     if (new.target === SelectableGenerator) {
@@ -200,9 +218,7 @@ export class RandomMapGenerator extends SelectableGenerator {
   }
 
   getOwnParameterDefinitions(implementedType = null) {
-    if (implementedType === ConcentrationFieldInterpolater) {
-      return [];
-    }
+    void implementedType;
 
     return [
       {
@@ -232,12 +248,17 @@ export class RandomMapGenerator extends SelectableGenerator {
     return graph;
   }
 
-  interpolateConcentrationField(concentrationField, seed) {
+  interpolateConcentrationField(
+    concentrationField, 
+    seed,
+    density = this.getParameterValue("density", ConcentrationFieldInterpolater)
+  ) {
     const graph = concentrationField;
     const random = new XorShift32(seed);
 
     graph.forEachTile((tile) => {
-      tile.value = random.nextFloat() > tile.value ? 0 : 1
+      let floor = random.nextFloat() > tile.value && random.nextFloat() < density 
+      tile.value = floor ? 1 : 0
     })
 
     return graph
@@ -563,7 +584,10 @@ export class PerlinNoise extends SelectableGenerator {
       }
     ];
 
-    if (implementedType === ConcentrationFieldGenerator) {
+    if (
+      implementedType === ConcentrationFieldGenerator ||
+      implementedType === BiomeGenerator
+    ) {
       return sharedDefinitions;
     }
 
@@ -604,6 +628,18 @@ export class PerlinNoise extends SelectableGenerator {
     const graph = this.makeWeirdField(size, seed, frequency)
 
     return normalizeConcentrationField(graph)
+  }
+
+  generateBiomes(
+    map,
+    seed,
+    frequency = this.getParameterValue("frequency", BiomeGenerator)
+  ) {
+    void map;
+    void seed;
+    void frequency;
+
+    throw new Error("PerlinNoise.generateBiomes must be implemented.");
   }
 
   makeWeirdField(size, seed, frequency) {
@@ -747,7 +783,10 @@ export class FractalBrownianMotion extends SelectableGenerator {
       }
     ];
 
-    if (implementedType === ConcentrationFieldGenerator) {
+    if (
+      implementedType === ConcentrationFieldGenerator ||
+      implementedType === BiomeGenerator
+    ) {
       return sharedDefinitions;
     }
 
@@ -819,6 +858,24 @@ export class FractalBrownianMotion extends SelectableGenerator {
     }
 
     return normalizeConcentrationField(graph)
+  }
+
+  generateBiomes(
+    map,
+    seed,
+    frequency = this.getParameterValue("frequency", BiomeGenerator),
+    lacunarity = this.getParameterValue("lacunarity", BiomeGenerator),
+    persistence = this.getParameterValue("persistence", BiomeGenerator),
+    iterations = this.getParameterValue("iterations", BiomeGenerator)
+  ) {
+    void map;
+    void seed;
+    void frequency;
+    void lacunarity;
+    void persistence;
+    void iterations;
+
+    throw new Error("FractalBrownianMotion.generateBiomes must be implemented.");
   }
 }
 
@@ -927,6 +984,34 @@ export class DrunkardsWalk extends SelectableGenerator {
     }
 
     return zeroOutFloatingTileValues(graph)
+  }
+
+  generateBiomes(
+    map,
+    seed,
+    drunkardCount = this.getParameterValue("drunkardCount", BiomeGenerator),
+    steps = this.getParameterValue("steps", BiomeGenerator)
+  ) {
+    void map;
+    void seed;
+    void drunkardCount;
+    void steps;
+
+    throw new Error("DrunkardsWalk.generateBiomes must be implemented.");
+  }
+
+  interpolateBiomes(
+    map,
+    seed,
+    drunkardCount = this.getParameterValue("drunkardCount", BiomeInterpolater),
+    steps = this.getParameterValue("steps", BiomeInterpolater)
+  ) {
+    void map;
+    void seed;
+    void drunkardCount;
+    void steps;
+
+    throw new Error("DrunkardsWalk.interpolateBiomes must be implemented.");
   }
 }
 
@@ -1091,6 +1176,36 @@ class VoronoiRegion {
 
   }
 
+function getDistributedHexColor(totalColors, requiredColorIndex) {
+  const normalizedTotal = Math.max(1, Math.trunc(totalColors));
+  const normalizedIndex = Math.min(
+    normalizedTotal - 1,
+    Math.max(0, Math.trunc(requiredColorIndex))
+  );
+  const colorValue = Math.floor(
+    ((normalizedIndex + 1) * 0xffffff) / (normalizedTotal + 1)
+  );
+
+  return `#${colorValue.toString(16).padStart(6, "0")}`;
+}
+
+function mergeBiomeMapIntoMap(biomeMap, basicMap) {
+  if (!biomeMap || !basicMap || biomeMap.size !== basicMap.size) {
+    return basicMap;
+  }
+
+  basicMap.forEachTile((tile) => {
+    if (tile.value !== 1) {
+      tile.biome = null;
+      return;
+    }
+
+    tile.biome = biomeMap.getTile(tile.x, tile.y)?.biome ?? null;
+  });
+
+  return basicMap;
+}
+
 export class VoronoiRegions extends SelectableGenerator {
   constructor() {
     super(
@@ -1099,7 +1214,7 @@ export class VoronoiRegions extends SelectableGenerator {
       {
         regionCount: 5
       },
-      [MapGenerator, ConcentrationFieldGenerator]
+      [MapGenerator, ConcentrationFieldGenerator, BiomeGenerator, BiomeInterpolater]
     );
   }
 
@@ -1198,6 +1313,143 @@ export class VoronoiRegions extends SelectableGenerator {
     }
 
     return normalizeConcentrationField(graph)
+  }
+
+  generateBiomes(
+    map,
+    seed,
+    regionCount = this.getParameterValue("regionCount", BiomeGenerator)
+  ) {
+    const basicMap = map;
+    const biomeMap = this.generateMap(map.size, seed, regionCount);
+
+    const isolatedFloorTiles = [];
+
+    biomeMap.forEachTile((tile) => {
+      if (tile.value !== 1) {
+        return;
+      }
+
+      let adjacentFloorCount = 0;
+
+      for (const neighbor of Object.values(tile.neighbors)) {
+        if (neighbor?.value === 1) {
+          adjacentFloorCount += 1;
+        }
+      }
+
+      if (adjacentFloorCount === 0) {
+        isolatedFloorTiles.push(tile);
+      }
+    });
+
+    for (const tile of isolatedFloorTiles) {
+      tile.value = 0;
+    }
+
+    const visited = new Set();
+    let regionIndex = 0;
+
+    biomeMap.forEachTile((tile) => {
+      if (tile.value !== 1 || visited.has(tile)) {
+        return;
+      }
+
+      const region = [];
+      const queue = [tile];
+      visited.add(tile);
+
+      while (queue.length > 0) {
+        const currentTile = queue.shift();
+        region.push(currentTile);
+
+        for (const neighbor of Object.values(currentTile.neighbors)) {
+          if (!neighbor || neighbor.value !== 1 || visited.has(neighbor)) {
+            continue;
+          }
+
+          visited.add(neighbor);
+          queue.push(neighbor);
+        }
+      }
+
+      const biomeColor = getDistributedHexColor(regionCount, regionIndex);
+      regionIndex += 1;
+
+      for (const regionTile of region) {
+        regionTile.biome = biomeColor;
+        regionTile.value = 0;
+      }
+    });
+
+    return mergeBiomeMapIntoMap(biomeMap, basicMap);
+  }
+
+  interpolateBiomes(
+    map,
+    seed,
+    regionCount = this.getParameterValue("regionCount", BiomeInterpolater)
+  ) {
+    const basicMap = map;
+    const biomeMap = new Graph(map.size);
+    const random = new XorShift32(seed);
+    const floorTiles = [];
+
+    basicMap.forEachTile((tile) => {
+      const biomeTile = biomeMap.getTile(tile.x, tile.y);
+
+      if (tile.value === 1) {
+        biomeTile.value = 0;
+        floorTiles.push(biomeTile);
+        return;
+      }
+
+      // Non-zero tiles are treated as blocked by the Voronoi expansion.
+      biomeTile.value = -1;
+    });
+
+    if (floorTiles.length === 0) {
+      return mergeBiomeMapIntoMap(biomeMap, basicMap);
+    }
+
+    const catalystCount = Math.min(
+      Math.max(1, Math.trunc(regionCount)),
+      floorTiles.length
+    );
+    const activeRegions = new Set();
+    const allRegions = [];
+
+    for (let i = 0; i < catalystCount; i += 1) {
+      const swapIndex = i + random.next(floorTiles.length - i);
+      [floorTiles[i], floorTiles[swapIndex]] = [floorTiles[swapIndex], floorTiles[i]];
+
+      const catalyst = floorTiles[i];
+      const region = new VoronoiRegion(catalyst);
+      activeRegions.add(region);
+      allRegions.push(region);
+    }
+
+    while (activeRegions.size > 0) {
+      for (const region of activeRegions) {
+        region.advance();
+
+        if (region.openEdge.size === 0) {
+          activeRegions.delete(region);
+        }
+      }
+    }
+
+    const finalizedRegions = allRegions.filter((region) => region.tiles.size > 0);
+
+    finalizedRegions.forEach((region, index) => {
+      const biomeColor = getDistributedHexColor(finalizedRegions.length, index);
+
+      for (const regionTile of region.tiles) {
+        regionTile.biome = biomeColor;
+      }
+    });
+
+    return mergeBiomeMapIntoMap(biomeMap, basicMap);
   }
 }
 

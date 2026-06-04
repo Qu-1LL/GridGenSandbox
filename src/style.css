@@ -95,6 +95,16 @@ canvas {
   gap: 16px;
 }
 
+.menu-overlay__section-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.menu-overlay__section-content--hidden {
+  display: none;
+}
+
 .menu-overlay__controls {
   display: flex;
   align-items: flex-start;
