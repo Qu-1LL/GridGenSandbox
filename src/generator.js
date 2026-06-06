@@ -454,6 +454,102 @@ function runCellularShrinkPass(graph, threshold) {
   return nextStep;
 }
 
+function cloneGraph(graph) {
+  const clonedGraph = new Graph(graph.size);
+
+  graph.forEachTile((tile) => {
+    const clonedTile = clonedGraph.getTile(tile.x, tile.y);
+    clonedTile.value = tile.value;
+    clonedTile.biome = tile.biome;
+  });
+
+  return clonedGraph;
+}
+
+function countDifferentNeighbors(tile) {
+  let count = 0;
+
+  for (const neighbor of Object.values(tile.neighbors)) {
+    if (!neighbor || neighbor.value === tile.value) {
+      continue;
+    }
+
+    count += 1;
+  }
+
+  return count;
+}
+
+function runRandomAutomataPass(graph, random) {
+  const nextStep = cloneGraph(graph);
+
+  graph.forEachTile((tile) => {
+    const swapChance = countDifferentNeighbors(tile) / 4;
+
+    if (random.nextFloat() >= swapChance) {
+      return;
+    }
+
+    nextStep.getTile(tile.x, tile.y).value = tile.value === 1 ? 0 : 1;
+  });
+
+  return nextStep;
+}
+
+function runRandomGrowthPass(graph, random) {
+  const nextStep = cloneGraph(graph);
+
+  graph.forEachTile((tile) => {
+    if (tile.value !== 0) {
+      return;
+    }
+
+    const swapChance = countDifferentNeighbors(tile) / 4;
+
+    if (random.nextFloat() >= swapChance) {
+      return;
+    }
+
+    nextStep.getTile(tile.x, tile.y).value = 1;
+  });
+
+  return nextStep;
+}
+
+function runRandomShrinkPass(graph, random) {
+  const nextStep = cloneGraph(graph);
+
+  graph.forEachTile((tile) => {
+    if (tile.value !== 1) {
+      return;
+    }
+
+    const swapChance = countDifferentNeighbors(tile) / 4;
+
+    if (random.nextFloat() >= swapChance) {
+      return;
+    }
+
+    nextStep.getTile(tile.x, tile.y).value = 0;
+  });
+
+  return nextStep;
+}
+
+function createRandomPhaseParameterDefinitions() {
+  return [
+    {
+      name: "iterations",
+      label: "Iterations",
+      valueType: GeneratorValueType.INTEGER,
+      getLimits: () => ({
+        lower: 1,
+        upper: 21
+      })
+    }
+  ];
+}
+
 export class CellularGrowth extends SelectableGenerator {
   constructor() {
     super(
@@ -552,6 +648,102 @@ export class CellularShrink extends SelectableGenerator {
 
     for (let iteration = 0; iteration < iterations; iteration += 1) {
       graph = runCellularShrinkPass(graph, threshold);
+    }
+
+    return graph;
+  }
+}
+
+export class RandomAutomata extends SelectableGenerator {
+  constructor() {
+    super(
+      "random-automata",
+      "Random Automata",
+      {
+        iterations: 5
+      },
+      [MapInterpolater]
+    );
+  }
+
+  getOwnParameterDefinitions() {
+    return createRandomPhaseParameterDefinitions();
+  }
+
+  interpolateMap(
+    map,
+    seed,
+    iterations = this.getParameterValue("iterations", MapInterpolater)
+  ) {
+    let graph = map;
+    const random = new XorShift32(seed);
+
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      graph = runRandomAutomataPass(graph, random);
+    }
+
+    return graph;
+  }
+}
+
+export class RandomGrowth extends SelectableGenerator {
+  constructor() {
+    super(
+      "random-growth",
+      "Random Growth",
+      {
+        iterations: 5
+      },
+      [MapInterpolater]
+    );
+  }
+
+  getOwnParameterDefinitions() {
+    return createRandomPhaseParameterDefinitions();
+  }
+
+  interpolateMap(
+    map,
+    seed,
+    iterations = this.getParameterValue("iterations", MapInterpolater)
+  ) {
+    let graph = map;
+    const random = new XorShift32(seed);
+
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      graph = runRandomGrowthPass(graph, random);
+    }
+
+    return graph;
+  }
+}
+
+export class RandomShrink extends SelectableGenerator {
+  constructor() {
+    super(
+      "random-shrink",
+      "Random Shrink",
+      {
+        iterations: 5
+      },
+      [MapInterpolater]
+    );
+  }
+
+  getOwnParameterDefinitions() {
+    return createRandomPhaseParameterDefinitions();
+  }
+
+  interpolateMap(
+    map,
+    seed,
+    iterations = this.getParameterValue("iterations", MapInterpolater)
+  ) {
+    let graph = map;
+    const random = new XorShift32(seed);
+
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      graph = runRandomShrinkPass(graph, random);
     }
 
     return graph;
@@ -1934,6 +2126,9 @@ export function createSelectableGenerators() {
     new CellularAutomata(),
     new CellularGrowth(),
     new CellularShrink(),
+    new RandomAutomata(),
+    new RandomGrowth(),
+    new RandomShrink(),
     new PerlinNoise(),
     new FractalBrownianMotion(),
     new DrunkardsWalk(),
